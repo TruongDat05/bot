@@ -55,3 +55,47 @@
 2026-03-17 22:46:31,691 [INFO] ✅ Đã sync 5 slash commands
 2026-03-17 22:46:31,691 [INFO] 🌐 Dashboard chạy tại http://localhost:5000
 2026-03-17 22:46:31,691 [INFO] aint.trwdat bắt đầu học lúc 22:46:31
+2026-03-17 22:51:33,195 [WARNING] davey is not installed, voice will NOT be supported
+2026-03-17 22:51:33,334 [INFO] logging in using static token
+2026-03-17 22:51:34,872 [INFO] Shard ID None has connected to Gateway (Session ID: 73796570f9962746e76c8ee8ad166a16).
+2026-03-17 22:51:36,879 [INFO] ✅ Bot con bot gay đã sẵn sàng!
+2026-03-17 22:51:36,879 [INFO] 📡 Đang theo dõi 3 phòng voice.
+2026-03-17 22:51:37,377 [INFO] ✅ Đã sync 5 slash commands
+2026-03-17 22:51:37,378 [INFO] 🌐 Dashboard chạy tại http://localhost:5000
+2026-03-17 22:51:37,378 [INFO] aint.trwdat bắt đầu học lúc 22:51:37
+2026-03-17 22:52:00,154 [INFO] AFC is enabled with max remote calls: 10.
+2026-03-17 22:52:00,511 [INFO] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent "HTTP/1.1 429 Too Many Requests"
+2026-03-17 22:52:00,512 [ERROR] Lỗi Gemini AI: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-2.0-flash\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.0-flash\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.0-flash\nPlease retry in 59.656478009s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_input_token_count', 'quotaId': 'GenerateContentInputTokensPerModelPerMinute-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.0-flash'}}, {'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.0-flash'}}, {'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.0-flash'}}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '59s'}]}}
+2026-03-17 22:57:52,606 [WARNING] davey is not installed, voice will NOT be supported
+2026-03-17 22:57:52,746 [INFO] logging in using static token
+2026-03-17 22:57:54,365 [INFO] Shard ID None has connected to Gateway (Session ID: b490a132458ccea0b41f43f975a55a22).
+2026-03-17 22:57:56,372 [INFO] ✅ Bot con bot gay đã sẵn sàng!
+2026-03-17 22:57:56,372 [INFO] 📡 Đang theo dõi 3 phòng voice.
+2026-03-17 22:57:56,754 [INFO] ✅ Đã sync 5 slash commands
+2026-03-17 22:57:56,755 [INFO] 🌐 Dashboard chạy tại http://localhost:5000
+2026-03-17 22:57:56,755 [INFO] aint.trwdat bắt đầu học lúc 22:57:56
+2026-03-17 22:58:26,513 [ERROR] Ignoring exception in command 'ask'
+Traceback (most recent call last):
+  File "/home/truongdat/.local/lib/python3.10/site-packages/discord/app_commands/commands.py", line 859, in _do_call
+    return await self._callback(interaction, **params)  # type: ignore
+  File "/home/truongdat/Desktop/discord_bot/bot.py", line 619, in slash_ask
+    await interaction.response.defer(thinking=True)
+  File "/home/truongdat/.local/lib/python3.10/site-packages/discord/interactions.py", line 892, in defer
+    response = await adapter.create_interaction_response(
+  File "/home/truongdat/.local/lib/python3.10/site-packages/discord/webhook/async_.py", line 224, in request
+    raise NotFound(response, data)
+discord.errors.NotFound: 404 Not Found (error code: 10062): Unknown interaction
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/truongdat/.local/lib/python3.10/site-packages/discord/app_commands/tree.py", line 1302, in _call
+    await command._invoke_with_namespace(interaction, namespace)
+  File "/home/truongdat/.local/lib/python3.10/site-packages/discord/app_commands/commands.py", line 884, in _invoke_with_namespace
+    return await self._do_call(interaction, transformed_values)
+  File "/home/truongdat/.local/lib/python3.10/site-packages/discord/app_commands/commands.py", line 877, in _do_call
+    raise CommandInvokeError(self, e) from e
+discord.app_commands.errors.CommandInvokeError: Command 'ask' raised an exception: NotFound: 404 Not Found (error code: 10062): Unknown interaction
+2026-03-17 22:58:26,626 [INFO] AFC is enabled with max remote calls: 10.
+2026-03-17 22:58:26,997 [INFO] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent "HTTP/1.1 429 Too Many Requests"
+2026-03-17 22:58:27,000 [ERROR] Lỗi Gemini AI: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.0-flash\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.0-flash\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-2.0-flash\nPlease retry in 33.068974855s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.0-flash'}}, {'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.0-flash'}}, {'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_input_token_count', 'quotaId': 'GenerateContentInputTokensPerModelPerMinute-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.0-flash'}}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '33s'}]}}

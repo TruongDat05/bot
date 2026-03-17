@@ -12,15 +12,14 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template_string
 
 try:
-    from google import genai
-    from google.genai import types
-    GEMINI_AVAILABLE = True
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
 except ImportError:
-    GEMINI_AVAILABLE = False
+    ANTHROPIC_AVAILABLE = False
 
 load_dotenv()
-TOKEN          = os.getenv('DISCORD_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+TOKEN             = os.getenv('DISCORD_TOKEN')
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
 SERVERS = [
     {
@@ -82,8 +81,8 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 ai_client = None
-if GEMINI_AVAILABLE and GEMINI_API_KEY:
-    ai_client = genai.Client(api_key=GEMINI_API_KEY)
+if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY:
+    ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 pending_checks: dict[int, asyncio.Task] = {}
 join_times: dict[int, datetime]         = {}
@@ -509,23 +508,23 @@ async def _check_absences():
 
 async def _ask_ai(question: str) -> str:
     if not ai_client:
-        return '❌ Chức năng AI chưa được cấu hình (thiếu `GEMINI_API_KEY` trong .env).'
+        return '❌ Chức năng AI chưa được cấu hình (thiếu `ANTHROPIC_API_KEY` trong .env).'
     try:
-        system = (
-            'Bạn là trợ lý học tập thông minh trong một Discord server học tập. '
-            'Trả lời ngắn gọn, dễ hiểu bằng tiếng Việt. '
-            'Dùng emoji phù hợp. Tối đa 400 từ.'
-        )
         response = await asyncio.to_thread(
-            ai_client.models.generate_content,
-            model='gemini-2.0-flash',
-            contents=question,
-            config=types.GenerateContentConfig(system_instruction=system)
+            ai_client.messages.create,
+            model='claude-haiku-4-5-20251001',
+            max_tokens=1000,
+            system=(
+                'Bạn là trợ lý học tập thông minh trong một Discord server học tập. '
+                'Trả lời ngắn gọn, dễ hiểu bằng tiếng Việt. '
+                'Dùng emoji phù hợp. Tối đa 400 từ.'
+            ),
+            messages=[{'role': 'user', 'content': question}]
         )
-        msg = f'🤖 **Câu hỏi:** {question}\n\n📝 **Trả lời:**\n{response.text}'
+        msg = f'🤖 **Câu hỏi:** {question}\n\n📝 **Trả lời:**\n{response.content[0].text}'
         return msg[:1990] + '...' if len(msg) > 2000 else msg
     except Exception as e:
-        log.error(f'Lỗi Gemini AI: {e}')
+        log.error(f'Lỗi Claude AI: {e}')
         return '❌ Có lỗi xảy ra khi gọi AI. Thử lại sau nhé!'
 
 
