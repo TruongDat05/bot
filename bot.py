@@ -16,7 +16,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 
 SERVERS = [
     {
-        'voice_channels': [1483271561036435660],
+        'voice_channels': [1483271561036435660, 1483301292427186358],  # ✅ Thêm phòng mới
         'report_channel': 1483288436369653861,
     },
     {
