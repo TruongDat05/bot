@@ -356,3 +356,15 @@ discord.app_commands.errors.CommandInvokeError: Command 'leaderboard' raised an 
 2026-03-18 17:03:53,140 [INFO] aint.trwdat bắt đầu học lúc 17:03:53
 2026-03-18 17:03:54,116 [INFO] aint.trwdat vào phòng → đếm ngược 60s.
 2026-03-18 17:04:55,033 [INFO] aint.trwdat rời phòng sau 0s.
+2026-03-18 18:36:01,179 [WARNING] davey is not installed, voice will NOT be supported
+2026-03-18 18:36:01,247 [INFO] logging in using static token
+2026-03-18 18:36:03,282 [INFO] Shard ID None has connected to Gateway (Session ID: 2b1c8ef63eb791236d7be3cabaf305a3).
+2026-03-18 18:36:05,294 [INFO] ✅ Bot con bot gay đã sẵn sàng!
+2026-03-18 18:36:05,294 [INFO] 📡 Đang theo dõi 3 phòng voice.
+2026-03-18 18:36:05,296 [INFO] ✅ Pomodoro Cog đã được tải
+2026-03-18 18:36:05,698 [INFO] ✅ Sync 11 lệnh → IELTS Master Hub
+2026-03-18 18:36:06,151 [INFO] ✅ Sync 11 lệnh → Khu Tự Trị
+2026-03-18 18:36:06,153 [INFO] 🌐 Dashboard chạy tại http://localhost:5000
+2026-03-18 18:36:06,157 [INFO] [18:36] Chạy checkpoint định kỳ...
+2026-03-18 18:36:06,551 [INFO] Tạo live message mới tại kênh noti-study
+2026-03-18 18:36:07,113 [INFO] Tạo live message mới tại kênh general

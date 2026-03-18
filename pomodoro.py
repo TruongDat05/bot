@@ -202,7 +202,8 @@ class PomodoroCog(commands.Cog):
 
         # Gửi tin nhắn countdown trong kênh
         msg = await interaction.channel.send(
-            self._build_personal_embed(sess)
+            self._build_personal_embed(sess),
+            silent=True
         )
         sess.live_message = msg
         await interaction.response.send_message(
@@ -341,7 +342,8 @@ class PomodoroCog(commands.Cog):
 
         # Đăng tin nhắn nhóm
         announce = await interaction.channel.send(
-            self._build_group_embed(grp)
+            self._build_group_embed(grp),
+            silent=True
         )
         grp.announce_msg = announce
 
@@ -626,7 +628,8 @@ class PomodoroCog(commands.Cog):
                     f'🎊 **{sess.member.display_name}** vừa hoàn thành '
                     f'`{sess.completed_rounds}` vòng Pomodoro! '
                     f'`{self._fmt(sess.completed_rounds * sess.work_minutes * 60)}` học tập! '
-                    f'⚡ +{summary["xp_bonus"]} XP'
+                    f'⚡ +{summary["xp_bonus"]} XP',
+                    silent=True
                 )
             except Exception:
                 pass
@@ -728,7 +731,8 @@ class PomodoroCog(commands.Cog):
                     f'🎊 **Phòng "{grp.name}" hoàn thành Pomodoro!**\n'
                     f'👥 Thành viên: {names_str}\n'
                     f'🍅 `{grp.total_rounds}` vòng | ⏱️ `{total_time}` học tập\n'
-                    f'Cả nhóm thật xuất sắc! 🏆'
+                    f'Cả nhóm thật xuất sắc! 🏆',
+                    silent=True
                 )
             except Exception:
                 pass
@@ -965,7 +969,7 @@ class PomodoroCog(commands.Cog):
 def create_pomodoro_cog(bot, add_study_time, safe_send_dm, format_time):
     """
     Hàm tiện ích tạo và trả về PomodoroCog đã được cấu hình.
-
+    
     Cách dùng trong bot.py (trong on_ready hoặc setup_hook):
 
         from pomodoro import create_pomodoro_cog

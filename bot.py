@@ -378,7 +378,7 @@ async def _check_milestones(member: discord.Member):
             channel = get_report_channel_for(member)
             if channel:
                 try:
-                    await channel.send(announce_msg)
+                    await channel.send(announce_msg, silent=True)
                 except Exception as e:
                     log.error(f'Lỗi gửi milestone announcement: {e}')
 
@@ -544,7 +544,7 @@ async def update_live_message(server: dict):
             except discord.NotFound:
                 live_message_ids.pop(channel.id, None)
 
-        new_msg = await channel.send(content)
+        new_msg = await channel.send(content, silent=True)
         live_message_ids[channel.id] = new_msg.id
         log.info(f'Tạo live message mới tại kênh {channel.name}')
 
@@ -695,7 +695,7 @@ async def _send_report():
     for server in SERVERS:
         channel = bot.get_channel(server['report_channel'])
         if channel:
-            await channel.send(message)
+            await channel.send(message, silent=True)
 
 async def _check_absences():
     data      = load_data()
