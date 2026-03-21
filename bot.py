@@ -76,7 +76,16 @@ LIVE_UPDATE_MINUTES = 5
 MILESTONE_MINUTES   = [30, 60, 120, 180, 240, 300, 360]
 
 XP_PER_MINUTE    = 10
-LEVEL_THRESHOLDS = [0, 100, 300, 600, 1000, 1500, 2500, 4000, 6000, 9000, 13000]
+# ┌─────────────────────────────────────────────────────────────┐
+# │  LEVEL THRESHOLDS — Try-Hard Curve (khó hơn cũ ~19 lần)   │
+# │  Lv0→1 : ~50 phút          Lv5→6 : ~27h                   │
+# │  Lv1→2 : ~1.7h             Lv6→7 : ~43h                   │
+# │  Lv2→3 : ~4.2h             Lv7→8 : ~67h                   │
+# │  Lv3→4 : ~8.3h             Lv8→9 : ~100h                  │
+# │  Lv4→5 : ~15h              Lv9→10: ~150h                  │
+# │  Tổng lên Max Lv10 ≈ 417 giờ học tích lũy                 │
+# └─────────────────────────────────────────────────────────────┘
+LEVEL_THRESHOLDS = [0, 500, 1500, 4000, 9000, 18000, 34000, 60000, 100000, 160000, 250000]
 LEVEL_NAMES      = [
     'Người mới 🌱', 'Học sinh 📖', 'Chăm chỉ ✏️', 'Tập trung 🎯',
     'Xuất sắc ⭐', 'Tinh anh 💎', 'Huyền thoại 🔮', 'Bậc thầy 🧠',
@@ -811,7 +820,8 @@ async def record_leave_and_notify(member: discord.Member) -> int:
     new_badges = check_and_award_badges(uid, member)
 
     if total_duration > 30:
-        data = data_now   # tái sử dụng, không đọc disk lần 2
+        # Reload sau khi quest/badge đã cập nhật XP vào disk → đảm bảo level/xp hiển thị đúng
+        data = load_data()
         if uid in data:
             info       = data[uid]
             xp         = info.get('xp', 0)
@@ -1133,11 +1143,13 @@ async def _send_report():
     sorted_data = sorted(data.items(), key=lambda x: x[1]['daily'].get(today, 0), reverse=True)
     lines       = [f'📊 **Báo cáo ngày {today}**\n']
     has_data    = False
-    for i, (uid, info) in enumerate(sorted_data, 1):
+    rank        = 0   # đếm riêng, chỉ tăng khi t > 0
+    for uid, info in sorted_data:
         t = info['daily'].get(today, 0)
         if t > 0:
-            has_data = True
-            medal = ['🥇', '🥈', '🥉'][i-1] if i <= 3 else f'`{i}.`'
+            has_data  = True
+            rank     += 1
+            medal     = ['🥇', '🥈', '🥉'][rank-1] if rank <= 3 else f'`{rank}.`'
             lines.append(
                 f'{medal} **{info["name"]}** `Lv.{info.get("level",0)}` '
                 f'🔥{info.get("streak",0)} — `{format_time(t)}`'
@@ -1152,6 +1164,7 @@ async def _check_absences():
     data      = load_data()
     today     = datetime.now().strftime('%Y-%m-%d')
     warn_date = (datetime.now() - timedelta(days=ABSENT_DAYS_WARN)).strftime('%Y-%m-%d')
+    dirty     = False   # flag: chỉ save_data 1 lần cuối nếu có thay đổi
     for uid, info in data.items():
         last_date   = info.get('last_study_date', '')
         last_warned = info.get('last_absent_warn', '')
@@ -1166,8 +1179,10 @@ async def _check_absences():
                 f'💪 Vào phòng ngay trước khi streak reset nhé!\n'
                 f'_Dùng `/remind <giờ>` để bot nhắc bạn học mỗi ngày._')
             data[uid]['last_absent_warn'] = today
-            save_data(data)
+            dirty = True
             break
+    if dirty:
+        save_data(data)   # ghi disk 1 lần duy nhất sau khi xử lý hết tất cả user
 
 # ─── AI ──────────────────────────────────────────────────────────────────────
 
@@ -1482,8 +1497,13 @@ async def slash_studying(interaction: discord.Interaction):
 # ── /setgoal ───────────────────────────────────────────────────────────────
 
 @bot.tree.command(name='setgoal', description='Đặt mục tiêu học tập hàng ngày')
-@app_commands.describe(goal='Mô tả mục tiêu', hours='Số giờ', minutes='Số phút')
-async def slash_setgoal(interaction: discord.Interaction, goal: str, hours: int = 0, minutes: int = 0):
+@app_commands.describe(goal='Mô tả mục tiêu', hours='Số giờ (0-23)', minutes='Số phút (0-59)')
+async def slash_setgoal(
+    interaction: discord.Interaction,
+    goal: str,
+    hours:   app_commands.Range[int, 0, 23] = 0,
+    minutes: app_commands.Range[int, 0, 59] = 0,
+):
     total = hours * 3600 + minutes * 60
     if total <= 0:
         await interaction.response.send_message('❌ Ít nhất 1 phút!', ephemeral=True); return
@@ -1635,6 +1655,15 @@ async def slash_report(interaction: discord.Interaction):
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(date='Ngày cần báo cáo YYYY-MM-DD (để trống = hôm qua)')
 async def slash_dailyboard(interaction: discord.Interaction, date: str = None):
+    if date is not None:
+        try:
+            datetime.strptime(date, '%Y-%m-%d')
+        except ValueError:
+            await interaction.response.send_message(
+                '❌ Định dạng ngày không hợp lệ! Dùng `YYYY-MM-DD`, ví dụ: `2025-01-31`',
+                ephemeral=True
+            )
+            return
     await interaction.response.defer(ephemeral=True)
     await _send_daily_board(date)
     await interaction.followup.send('✅ Đã gửi bảng tổng kết ngày!', ephemeral=True)
@@ -1652,11 +1681,14 @@ async def slash_backup(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     backup_data()
     backups = sorted(os.listdir(BACKUP_DIR)) if os.path.exists(BACKUP_DIR) else []
-    await interaction.followup.send(
-        f'✅ Đã backup! Tổng: **{len(backups)}** bản trong `/{BACKUP_DIR}/`\n'
-        f'Mới nhất: `{backups[-1]}`' if backups else '✅ Backup xong.',
-        ephemeral=True
-    )
+    if backups:
+        msg = (
+            f'✅ Đã backup! Tổng: **{len(backups)}** bản trong `/{BACKUP_DIR}/`\n'
+            f'Mới nhất: `{backups[-1]}`'
+        )
+    else:
+        msg = '✅ Backup xong.'
+    await interaction.followup.send(msg, ephemeral=True)
 
 # ─── PREFIX COMMANDS ─────────────────────────────────────────────────────────
 
@@ -1968,7 +2000,7 @@ let chartInst=null;
 const fmtTime=s=>{if(!s||s<=0)return'0m';const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h>0?`${h}h ${m}m`:`${m}m`;};
 const getToday=()=>new Date().toISOString().split('T')[0];
 const getPastDays=n=>Array.from({length:n},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(n-1-i));return d.toISOString().split('T')[0];});
-const THRES=[0,100,300,600,1000,1500,2500,4000,6000,9000,13000];
+const THRES=[0,500,1500,4000,9000,18000,34000,60000,100000,160000,250000];
 const getLv=xp=>{for(let i=THRES.length-1;i>=0;i--)if(xp>=THRES[i])return i;return 0;};
 const xpPct=xp=>{const l=getLv(xp);if(l>=THRES.length-1)return 100;return Math.round(((xp-THRES[l])/(THRES[l+1]-THRES[l]))*100);};
 const tooltip=document.getElementById('tooltip');
