@@ -270,16 +270,18 @@ if OPENROUTER_AVAILABLE and OPENROUTER_API_KEY:
 
 # ─── STATE ───────────────────────────────────────────────────────────────────
 
-pending_checks:   dict[int, asyncio.Task] = {}
-join_times:       dict[int, datetime]     = {}
-last_checkpoint:  dict[int, datetime]     = {}
-milestone_sent:   dict[int, set]          = {}
-live_message_ids: dict[int, int]          = {}
-daily_first_join: dict[str, int]          = {}
-session_counts:   dict[int, int]          = {}
-daily_board_sent: set                     = set()
+pending_checks:     dict[int, asyncio.Task] = {}
+join_times:         dict[int, datetime]     = {}
+last_checkpoint:    dict[int, datetime]     = {}
+milestone_sent:     dict[int, set]          = {}
+live_message_ids:   dict[int, int]          = {}
+daily_first_join:   dict[str, int]          = {}
+session_counts:     dict[int, int]          = {}
+daily_board_sent:   set                     = set()
 # remind_tasks: member_id → (hour, asyncio.Task)
-remind_tasks:     dict[int, tuple]        = {}
+remind_tasks:       dict[int, tuple]        = {}
+# media_active_members: tập ID của những member đang bật Cam hoặc Stream
+media_active_members: set                   = set()
 
 _data_lock = threading.Lock()   # ← thread-safe file I/O
 
@@ -462,12 +464,13 @@ def generate_daily_quests(uid: str, today: str) -> list[dict]:
 def get_quest_info(quest_id: str) -> dict | None:
     return next((q for q in QUEST_POOL if q['id'] == quest_id), None)
 
-def update_quest_progress(uid: str, today: str) -> list[str]:
+def update_quest_progress(uid: str, today: str, override_today_secs: int = None) -> list[str]:
     data = load_data()
     if uid not in data:
         return []
     quests     = data[uid].get('daily_quests', {}).get(today, [])
-    today_secs = data[uid]['daily'].get(today, 0)
+    # Dùng override nếu được truyền (real-time từ current session), fallback về saved data
+    today_secs = override_today_secs if override_today_secs is not None else data[uid]['daily'].get(today, 0)
     streak     = data[uid].get('streak', 0)
     now_hour   = datetime.now().hour
     sessions   = session_counts.get(int(uid), 0)
@@ -591,7 +594,7 @@ def generate_profile_card(member_id: int) -> bytes | None:
     badges  = info.get('badges', [])
     today   = datetime.now().strftime('%Y-%m-%d')
     today_secs = info['daily'].get(today, 0)
-    if member_id in join_times:
+    if member_id in join_times and member_id in media_active_members:
         chk = last_checkpoint.get(member_id, join_times[member_id])
         today_secs += int((datetime.now() - chk).total_seconds())
 
@@ -714,6 +717,7 @@ def record_join(member: discord.Member):
     now   = datetime.now()
     today = now.strftime('%Y-%m-%d')
     join_times[member.id]     = now
+    last_checkpoint[member.id] = now   # ← bắt đầu tính giờ từ đúng lúc vào/bật cam
     milestone_sent[member.id] = set()
     session_counts[member.id] = session_counts.get(member.id, 0) + 1
     if today not in daily_first_join:
@@ -723,6 +727,11 @@ def record_join(member: discord.Member):
         award_special_flag(uid, 'night_owl')
     if now.hour < 8:
         award_special_flag(uid, 'early_bird')
+    # Cập nhật trạng thái media khi vào
+    if member.voice and is_media_active(member.voice):
+        media_active_members.add(member.id)
+    else:
+        media_active_members.discard(member.id)
     log.info(f'{member.display_name} bắt đầu học lúc {now.strftime("%H:%M:%S")}')
 
 async def _do_checkpoint(member: discord.Member) -> int:
@@ -752,7 +761,15 @@ async def _check_quests_and_badges(member: discord.Member):
     uid   = str(member.id)
     today = datetime.now().strftime('%Y-%m-%d')
     generate_daily_quests(uid, today)
-    just_done  = update_quest_progress(uid, today)
+    # Tính real-time secs để quest progress luôn chính xác
+    data        = load_data()
+    saved_secs  = data.get(uid, {}).get('daily', {}).get(today, 0)
+    if member.id in join_times and member.id in media_active_members:
+        chk = last_checkpoint.get(member.id, join_times[member.id])
+        real_secs = saved_secs + int((datetime.now() - chk).total_seconds())
+    else:
+        real_secs = saved_secs
+    just_done  = update_quest_progress(uid, today, override_today_secs=real_secs)
     new_badges = check_and_award_badges(uid, member)
     for qid in just_done:
         info = get_quest_info(qid)
@@ -776,20 +793,25 @@ async def record_leave_and_notify(member: discord.Member) -> int:
     now        = datetime.now()
     checkpoint = last_checkpoint.get(member.id, join_times[member.id])
     remaining  = int((now - checkpoint).total_seconds())
-    if remaining > 0:
+    # Chỉ lưu thời gian còn lại nếu member đang có Cam/Stream bật
+    if remaining > 0 and member.id in media_active_members:
         add_study_time(member.id, member.display_name, remaining)
     total_duration = int((now - join_times.pop(member.id)).total_seconds())
     last_checkpoint.pop(member.id, None)
     milestone_sent.pop(member.id, None)
+    media_active_members.discard(member.id)  # xóa khỏi tracking set
 
     uid   = str(member.id)
     today = now.strftime('%Y-%m-%d')
     generate_daily_quests(uid, today)
-    just_done  = update_quest_progress(uid, today)
+    # Load 1 lần duy nhất sau khi đã lưu xong để lấy dữ liệu mới nhất
+    data_now   = load_data()
+    final_secs = data_now.get(uid, {}).get('daily', {}).get(today, 0)
+    just_done  = update_quest_progress(uid, today, override_today_secs=final_secs)
     new_badges = check_and_award_badges(uid, member)
 
     if total_duration > 30:
-        data = load_data()
+        data = data_now   # tái sử dụng, không đọc disk lần 2
         if uid in data:
             info       = data[uid]
             xp         = info.get('xp', 0)
@@ -835,17 +857,21 @@ async def update_live_message(server: dict):
     now       = datetime.now()
     guild     = channel.guild
     voice_ids = server['voice_channels']
+    today     = now.strftime('%Y-%m-%d')
+    data      = load_data()          # ← load 1 lần ngoài loop, không đọc disk N lần
     active    = []
     for mid, start_time in list(join_times.items()):
         m = guild.get_member(mid)
         if not m or not m.voice or not m.voice.channel: continue
         if m.voice.channel.id not in voice_ids: continue
-        data        = load_data()
-        uid         = str(mid)
-        today       = now.strftime('%Y-%m-%d')
-        saved       = data.get(uid, {}).get('daily', {}).get(today, 0)
-        chk         = last_checkpoint.get(mid, start_time)
-        today_total = saved + int((now - chk).total_seconds())
+        uid   = str(mid)
+        saved = data.get(uid, {}).get('daily', {}).get(today, 0)
+        # Chỉ cộng unsaved nếu đang có Cam/Stream
+        if mid in media_active_members:
+            chk         = last_checkpoint.get(mid, start_time)
+            today_total = saved + int((now - chk).total_seconds())
+        else:
+            today_total = saved
         active.append({
             'm': m,
             'session': int((now - start_time).total_seconds()),
@@ -1069,14 +1095,30 @@ async def scheduled_tasks():
 async def checkpoint_task():
     now = datetime.now()
     log.info(f'[{now.strftime("%H:%M")}] Checkpoint...')
+    # Lấy danh sách user đang trong Pomodoro (để không checkpoint 2 lần)
+    pomo_cog      = bot.cogs.get('PomodoroCog')
+    pomo_sessions = pomo_cog._sessions if pomo_cog else {}
     for mid in list(join_times.keys()):
         member = None
         for guild in bot.guilds:
             m = guild.get_member(mid)
             if m and m.voice and m.voice.channel and m.voice.channel.id in FOCUS_CHANNEL_IDS:
                 member = m; break
-        if not member: continue
+        if not member:
+            # Member không còn trong kênh → dọn dẹp stale entry
+            join_times.pop(mid, None)
+            last_checkpoint.pop(mid, None)
+            milestone_sent.pop(mid, None)
+            media_active_members.discard(mid)
+            continue
+        # Bỏ qua nếu user đang trong Pomodoro (Pomodoro tự quản lý thời gian)
+        if mid in pomo_sessions:
+            continue
+        # Đồng bộ trạng thái media từ Discord thực tế
         if member.voice and is_media_active(member.voice):
+            media_active_members.add(member.id)
+        # Chỉ checkpoint khi đang có Cam/Stream
+        if mid in media_active_members:
             await _do_checkpoint(member)
             await _check_milestones(member)
             await _check_quests_and_badges(member)
@@ -1161,7 +1203,7 @@ def _build_rank_message(target: discord.Member, data: dict) -> str:
     total   = info.get('total', 0)
     today   = datetime.now().strftime('%Y-%m-%d')
     saved   = info['daily'].get(today, 0)
-    if target.id in join_times:
+    if target.id in join_times and target.id in media_active_members:
         chk   = last_checkpoint.get(target.id, join_times[target.id])
         saved += int((datetime.now() - chk).total_seconds())
     lv_now = get_level(xp)
@@ -1219,7 +1261,24 @@ async def slash_quest(interaction: discord.Interaction):
         await interaction.response.send_message(
             '❌ Bạn chưa có dữ liệu! Hãy vào phòng học trước.', ephemeral=True
         ); return
-    quests     = generate_daily_quests(uid, today)
+
+    # Tính thời gian học thực tế (saved + unsaved từ session hiện tại)
+    mid         = interaction.user.id
+    saved_secs  = data[uid]['daily'].get(today, 0)
+    if mid in join_times and mid in media_active_members:
+        chk = last_checkpoint.get(mid, join_times[mid])
+        real_today_secs = saved_secs + int((datetime.now() - chk).total_seconds())
+    else:
+        real_today_secs = saved_secs
+
+    # Đảm bảo quest tồn tại, rồi cập nhật progress với real-time secs
+    generate_daily_quests(uid, today)
+    update_quest_progress(uid, today, override_today_secs=real_today_secs)
+
+    # Reload data sau khi update để lấy progress mới nhất
+    data   = load_data()
+    quests = data[uid].get('daily_quests', {}).get(today, [])
+
     lines      = [f'📋 **Nhiệm vụ hôm nay** _{today}_\n']
     total_done = 0
     for q in quests:
@@ -1306,7 +1365,7 @@ async def slash_stats(interaction: discord.Interaction, member: discord.Member =
     info        = data[uid]
     today       = datetime.now().strftime('%Y-%m-%d')
     today_saved = info['daily'].get(today, 0)
-    if target.id in join_times:
+    if target.id in join_times and target.id in media_active_members:
         chk         = last_checkpoint.get(target.id, join_times[target.id])
         today_saved += int((datetime.now() - chk).total_seconds())
     xp         = info.get('xp', 0)
@@ -1343,15 +1402,17 @@ async def slash_leaderboard(interaction: discord.Interaction):
     data  = load_data()
     today = datetime.now().strftime('%Y-%m-%d')
     now   = datetime.now()
-    def real(uid_str, info):
+    def real_time(uid_str, info):
         s   = info['daily'].get(today, 0)
         mid = int(uid_str)
-        if mid in join_times:
+        if mid in join_times and mid in media_active_members:
             chk = last_checkpoint.get(mid, join_times[mid])
             s  += int((now - chk).total_seconds())
         return s
+    # Pre-compute để tránh gọi real() 2 lần cho mỗi user
+    entries = [(u, i, real_time(u, i)) for u, i in data.items()]
     top10 = sorted(
-        [(u, i, real(u, i)) for u, i in data.items() if real(u, i) > 0],
+        [e for e in entries if e[2] > 0],
         key=lambda x: x[2], reverse=True
     )[:10]
     lines = [f'🏆 **Bảng xếp hạng hôm nay** _{today}_\n']
@@ -1395,18 +1456,22 @@ async def slash_top_alltime(interaction: discord.Interaction):
 async def slash_studying(interaction: discord.Interaction):
     now   = datetime.now()
     guild = interaction.guild
+    data  = load_data()  # load 1 lần, không load lại trong loop
+    today = now.strftime('%Y-%m-%d')
     lines = ['🟢 **Đang học ngay lúc này**\n']
     count = 0
     for mid, st in sorted(join_times.items()):
         m = guild.get_member(mid) if guild else None
         if not m or not m.voice: continue
         secs  = int((now - st).total_seconds())
-        data  = load_data()
         uid   = str(mid)
-        today = now.strftime('%Y-%m-%d')
         saved = data.get(uid, {}).get('daily', {}).get(today, 0)
-        chk   = last_checkpoint.get(mid, st)
-        total = saved + int((now - chk).total_seconds())
+        # Chỉ cộng unsaved khi đang có Cam/Stream
+        if mid in media_active_members:
+            chk   = last_checkpoint.get(mid, st)
+            total = saved + int((now - chk).total_seconds())
+        else:
+            total = saved
         icon  = media_status_icon(m.voice)
         count += 1
         lines.append(f'{icon} **{m.display_name}** | Phiên: `{format_time(secs)}` | Hôm nay: `{format_time(total)}`')
@@ -1605,7 +1670,7 @@ async def cmd_stats(ctx, member: discord.Member = None):
     info       = data[uid]
     today      = datetime.now().strftime('%Y-%m-%d')
     saved      = info['daily'].get(today, 0)
-    if target.id in join_times:
+    if target.id in join_times and target.id in media_active_members:
         chk   = last_checkpoint.get(target.id, join_times[target.id])
         saved += int((datetime.now() - chk).total_seconds())
     recent = sorted(info['daily'].items(), reverse=True)[:7]
@@ -1621,15 +1686,16 @@ async def cmd_leaderboard(ctx):
     data  = load_data()
     today = datetime.now().strftime('%Y-%m-%d')
     now   = datetime.now()
-    def real(uid_str, info):
+    def real_time(uid_str, info):
         s = info['daily'].get(today, 0)
         mid = int(uid_str)
-        if mid in join_times:
+        if mid in join_times and mid in media_active_members:
             chk = last_checkpoint.get(mid, join_times[mid])
             s  += int((now - chk).total_seconds())
         return s
+    entries = [(u, i, real_time(u, i)) for u, i in data.items()]
     top10 = sorted(
-        [(u, i, real(u, i)) for u, i in data.items() if real(u, i) > 0],
+        [e for e in entries if e[2] > 0],
         key=lambda x: x[2], reverse=True
     )[:10]
     lines = ['🏆 **Bảng xếp hạng hôm nay**\n']
@@ -1649,7 +1715,18 @@ async def cmd_quest(ctx):
     data  = load_data()
     if uid not in data:
         await ctx.send('❌ Chưa có dữ liệu! Vào phòng học trước.'); return
-    quests = generate_daily_quests(uid, today)
+    # Tính real-time secs
+    mid        = ctx.author.id
+    saved_secs = data[uid]['daily'].get(today, 0)
+    if mid in join_times and mid in media_active_members:
+        chk = last_checkpoint.get(mid, join_times[mid])
+        real_secs = saved_secs + int((datetime.now() - chk).total_seconds())
+    else:
+        real_secs = saved_secs
+    generate_daily_quests(uid, today)
+    update_quest_progress(uid, today, override_today_secs=real_secs)
+    data   = load_data()
+    quests = data[uid].get('daily_quests', {}).get(today, [])
     lines  = [f'📋 **Quest hôm nay** _{today}_\n']
     for q in quests:
         info = get_quest_info(q['id'])
@@ -1752,7 +1829,9 @@ async def on_ready():
             for m in ch.members:
                 if not m.bot:
                     record_join(m)
-                    if not is_media_active(m.voice):
+                    if is_media_active(m.voice):
+                        media_active_members.add(m.id)
+                    else:
                         start_check(m, 'bot restart – no cam/stream')
 
 @bot.event
@@ -1766,9 +1845,19 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         was_active = is_media_active(before)
         now_active = is_media_active(after)
         if not was_active and now_active:
+            # Bật Cam/Stream → hủy kick, đặt lại checkpoint từ thời điểm này
             cancel_task(member.id)
-            log.info(f'{member.display_name} bật Cam/Stream → cancel kick')
+            media_active_members.add(member.id)
+            if member.id not in join_times:
+                # Edge case: chưa được track (vd: bot restart)
+                record_join(member)
+            else:
+                # Reset checkpoint về thời điểm bật cam để chỉ tính từ đây
+                last_checkpoint[member.id] = datetime.now()
+            log.info(f'{member.display_name} bật Cam/Stream → bắt đầu tính giờ từ bây giờ')
         elif was_active and not now_active:
+            # Tắt Cam/Stream → lưu giờ tích lũy, bắt đầu đếm ngược kick
+            media_active_members.discard(member.id)
             await _do_checkpoint(member)
             start_check(member, 'tắt Cam/Stream')
             await safe_send_dm(member,
@@ -1792,6 +1881,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 await update_live_message(server); break
 
     elif left_focus and not stayed_in_focus:
+        media_active_members.discard(member.id)
         duration = await record_leave_and_notify(member)
         cancel_task(member.id)
         log.info(f'{member.display_name} rời phòng sau {format_time(duration)}')
@@ -1991,8 +2081,12 @@ def _update_live_cache():
         uid      = str(mid)
         info     = data.get(uid, {})
         saved    = info.get('daily', {}).get(today, 0)
-        chk      = last_checkpoint.get(mid, start)
-        unsaved  = int((now - chk).total_seconds())
+        # Chỉ cộng unsaved khi đang có Cam/Stream
+        if mid in media_active_members:
+            chk     = last_checkpoint.get(mid, start)
+            unsaved = int((now - chk).total_seconds())
+        else:
+            unsaved = 0
         is_stream = is_video = False
         for guild in bot.guilds:
             m = guild.get_member(mid)
