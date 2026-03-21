@@ -308,7 +308,7 @@ def create_weekly_report_cog(
             if days_until == 0 and now.hour >= WEEKLY_SEND_HOUR:
                 days_until = 7
             next_send  = (now + timedelta(days=days_until)).replace(
-                hour=WEEKLY_SEND_HOUR, minute=0, second=0
+                hour=WEEKLY_SEND_HOUR, minute=WEEKLY_SEND_MINUTE, second=0, microsecond=0
             )
             diff       = next_send - now
             h_left     = int(diff.total_seconds() // 3600)
@@ -335,10 +335,10 @@ def create_weekly_report_cog(
         async def weekly_leaderboard(self, interaction: discord.Interaction):
             data      = load_data_fn()
             this_week = _week_dates(0)
+            # Pre-compute để tránh gọi _week_total 2 lần / user
+            entries = [(uid, info, _week_total(info, this_week)) for uid, info in data.items()]
             top10 = sorted(
-                [(uid, info, _week_total(info, this_week))
-                 for uid, info in data.items()
-                 if _week_total(info, this_week) > 0],
+                [e for e in entries if e[2] > 0],
                 key=lambda x: x[2], reverse=True
             )[:10]
 
@@ -471,10 +471,9 @@ def create_weekly_report_cog(
             elif action == 'lb' or action == 'leaderboard':
                 data      = load_data_fn()
                 this_week = _week_dates(0)
+                entries = [(uid, info, _week_total(info, this_week)) for uid, info in data.items()]
                 top5 = sorted(
-                    [(uid, info, _week_total(info, this_week))
-                     for uid, info in data.items()
-                     if _week_total(info, this_week) > 0],
+                    [e for e in entries if e[2] > 0],
                     key=lambda x: x[2], reverse=True
                 )[:5]
                 lines = ['🏆 **Top học tuần này**\n']
@@ -556,13 +555,13 @@ def create_weekly_report_cog(
         async def _before_ticker(self):
             await bot.wait_until_ready()
 
-        def cog_load(self):
+        async def cog_load(self):
             if not self._weekly_task_started:
                 self._weekly_ticker.start()
                 self._weekly_task_started = True
                 log.info('[WeeklyReport] Ticker khởi động.')
 
-        def cog_unload(self):
+        async def cog_unload(self):
             self._weekly_ticker.cancel()
 
     return WeeklyReportCog()
