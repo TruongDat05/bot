@@ -38,6 +38,12 @@ except ImportError:
 load_dotenv()
 TOKEN              = os.getenv('DISCORD_TOKEN')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+OPENROUTER_REFERER = (
+    os.getenv('OPENROUTER_HTTP_REFERER')
+    or os.getenv('OPENROUTER_SITE_URL')
+    or 'https://localhost'
+)
+OPENROUTER_TITLE   = os.getenv('OPENROUTER_APP_NAME', 'Study Discord Bot')
 
 SERVERS = [
     {
@@ -58,16 +64,33 @@ DAILY_BOARD_HOUR    = 0
 DAILY_BOARD_MINUTE  = 0
 
 
-DATA_DIR_ENV = os.getenv('DATA_DIR')
-if DATA_DIR_ENV:
-    # Running in Docker - use mounted volume
-    BASE_DIR = Path(DATA_DIR_ENV)
-    log_file_path = BASE_DIR / 'bot.log'
-else:
-    # Running locally - use script directory
-    BASE_DIR = Path(__file__).parent.resolve()
-    log_file_path = BASE_DIR / 'bot.log'
+def _ensure_writable_base_dir() -> Path:
+    """Determine the best writable directory for storing application data.
+    
+    Tries DATA_DIR_ENV first if set, then falls back to local project directory.
+    Ensures the directory exists and is writable.
+    """
+    DATA_DIR_ENV = os.getenv('DATA_DIR')
+    
+    if DATA_DIR_ENV:
+        try:
+            data_dir = Path(DATA_DIR_ENV)
+            # Try to create the directory if it doesn't exist
+            data_dir.mkdir(parents=True, exist_ok=True)
+            # Verify writeability by attempting a test write
+            test_file = data_dir / '.write_test'
+            test_file.touch()
+            test_file.unlink()
+            return data_dir
+        except (OSError, PermissionError, IOError):
+            # Fall back to local directory if DATA_DIR is not writable
+            pass
+    
+    # Fall back to script directory (always writable locally)
+    return Path(__file__).parent.resolve()
 
+BASE_DIR = _ensure_writable_base_dir()
+log_file_path = BASE_DIR / 'bot.log'
 DATA_FILE           = BASE_DIR / 'study_data.json'
 RUNTIME_STATE_FILE  = BASE_DIR / 'runtime_state.json'
 BACKUP_DIR          = BASE_DIR / 'backups'
@@ -196,9 +219,21 @@ if not TOKEN:
     raise ValueError('Không tìm thấy DISCORD_TOKEN trong file .env!')
 
 FOCUS_CHANNEL_IDS = [ch for s in SERVERS for ch in s['voice_channels']]
+backup_dir_warning: str | None = None
 
-# ✅ Ensure directories exist
-BACKUP_DIR.mkdir(exist_ok=True, parents=True)
+# ✅ Ensure directories exist and are writable
+try:
+    BACKUP_DIR.mkdir(exist_ok=True, parents=True)
+except (OSError, PermissionError, IOError) as e:
+    # If BACKUP_DIR creation fails, ensure at least BASE_DIR exists
+    try:
+        BASE_DIR.mkdir(exist_ok=True, parents=True)
+    except Exception:
+        pass
+    backup_dir_warning = (
+        f'Warning: Could not create BACKUP_DIR at {BACKUP_DIR}: {e}. '
+        f'Using {BASE_DIR} as fallback.'
+    )
 
 # ─── LOGGING ─────────────────────────────────────────────────────────────────
 
@@ -211,6 +246,8 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+if backup_dir_warning:
+    log.warning(backup_dir_warning)
 
 #  Suppress noisy libraries
 logging.getLogger('discord').setLevel(logging.WARNING)
@@ -226,7 +263,14 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 ai_client = None
 if OPENROUTER_AVAILABLE and OPENROUTER_API_KEY:
-    ai_client = OpenAI(base_url='https://openrouter.ai/api/v1', api_key=OPENROUTER_API_KEY)
+    ai_client = OpenAI(
+        base_url='https://openrouter.ai/api/v1',
+        api_key=OPENROUTER_API_KEY,
+        default_headers={
+            'HTTP-Referer': OPENROUTER_REFERER,
+            'X-Title': OPENROUTER_TITLE,
+        },
+    )
 
 # ─── STATE ───────────────────────────────────────────────────────────────────
 
@@ -245,6 +289,7 @@ _dashboard_started:   bool                    = False
 
 _data_lock = threading.RLock()
 _runtime_lock = threading.Lock()
+_last_data_save_success: bool = True
 
 # ─── MEDIA HELPERS ───────────────────────────────────────────────────────────
 
@@ -274,36 +319,57 @@ def load_data() -> dict:
     with _data_lock:
         return _load_data_unlocked()
 
-def _save_data_unlocked(data: dict):
-    """✅ FIX: Atomic save with temp file using Path"""
+def _verify_saved_data_unlocked(expected: dict) -> bool:
     try:
-        # Write to temporary file first
-        temp_fd, temp_path = tempfile.mkstemp(
-            dir=DATA_FILE.parent,
-            prefix='.study_data_',
-            suffix='.json.tmp'
-        )
-        
+        if not DATA_FILE.exists():
+            return False
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            loaded = json.load(f)
+        return isinstance(loaded, dict) and loaded == expected
+    except Exception as e:
+        log.error(f'Lỗi xác minh data sau khi lưu: {e}', exc_info=True)
+        return False
+
+def _save_data_unlocked(data: dict):
+    global _last_data_save_success
+    _last_data_save_success = False
+    last_error: Exception | None = None
+
+    for attempt in range(2):
+        temp_path: str | None = None
         try:
+            temp_fd, temp_path = tempfile.mkstemp(
+                dir=DATA_FILE.parent,
+                prefix='.study_data_',
+                suffix='.json.tmp'
+            )
+
             with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
                 f.flush()
-                os.fsync(f.fileno())  # ✅ Force write to disk
-            
-            # Atomic rename
+                os.fsync(f.fileno())
+
             Path(temp_path).replace(DATA_FILE)
-            
+
+            if not _verify_saved_data_unlocked(data):
+                raise IOError('Xác minh dữ liệu sau khi lưu không khớp.')
+
+            _last_data_save_success = True
+            return
         except Exception as e:
-            # Clean up temp file on error
-            Path(temp_path).unlink(missing_ok=True)
-            raise e
-            
-    except IOError as e:
-        log.error(f'Lỗi lưu data: {e}', exc_info=True)
-        print(f'❌ SAVE ERROR: {e}', file=sys.stderr)
-    except Exception as e:
-        log.error(f'Lỗi không xác định khi lưu data: {e}', exc_info=True)
-        print(f'❌ CRITICAL SAVE ERROR: {e}', file=sys.stderr)
+            last_error = e
+            if temp_path is not None:
+                Path(temp_path).unlink(missing_ok=True)
+            if attempt == 0:
+                log.error(f'Lỗi lưu data (lần 1/2): {e}', exc_info=True)
+                continue
+
+    if isinstance(last_error, IOError):
+        log.critical(f'Lỗi lưu data nghiêm trọng: {last_error}', exc_info=True)
+        print(f'❌ SAVE ERROR: {last_error}', file=sys.stderr)
+    elif last_error is not None:
+        log.critical(f'Lỗi không xác định khi lưu data: {last_error}', exc_info=True)
+        print(f'❌ CRITICAL SAVE ERROR: {last_error}', file=sys.stderr)
 
 def save_data(data: dict):
     with _data_lock:
@@ -311,16 +377,13 @@ def save_data(data: dict):
 
 def update_data(mutator):
     """
-    ✅ FIX: Thread-safe update with proper deepcopy BEFORE mutation
-    to avoid race conditions
+    Thread-safe update that persists changes atomically
+    and returns a deepcopy of the saved state.
     """
     with _data_lock:
         data = _load_data_unlocked()
-        #  Create snapshot BEFORE mutation (optional, for debugging)
-        # snapshot = deepcopy(data)
         result = mutator(data)
         _save_data_unlocked(data)
-        # Return both result and fresh copy after save
         return result, deepcopy(data)
 
 def _serialize_dt(dt: datetime) -> str:
@@ -344,6 +407,7 @@ def save_runtime_state():
         'media_active_members': sorted(list(media_active_members)),
     }
     with _runtime_lock:
+        temp_path: str | None = None
         try:
             temp_fd, temp_path = tempfile.mkstemp(
                 dir=RUNTIME_STATE_FILE.parent,
@@ -357,7 +421,12 @@ def save_runtime_state():
             Path(temp_path).replace(RUNTIME_STATE_FILE)
         except IOError as e:
             log.error(f'Lỗi lưu runtime state: {e}')
-            Path(temp_path).unlink(missing_ok=True)
+            if temp_path is not None:
+                Path(temp_path).unlink(missing_ok=True)
+        except Exception as e:
+            log.error(f'Lỗi không xác định khi lưu runtime state: {e}', exc_info=True)
+            if temp_path is not None:
+                Path(temp_path).unlink(missing_ok=True)
 
 def load_runtime_state() -> dict:
     """✅ FIX: Use Path for runtime state file"""
@@ -542,6 +611,18 @@ def format_time(seconds: int) -> str:
     if m > 0:  return f'{m}m {s}s'
     return f'{s}s'
 
+def _default_progress_result() -> dict:
+    return {
+        'xp_gained': 0,
+        'level_up': False,
+        'new_level': None,
+        'streak': 0,
+        'total_xp': 0,
+        'goal': None,
+        'goal_seconds': 0,
+        'today_seconds': 0,
+    }
+
 def _get_live_enriched_data() -> dict:
     data = load_data()
     for mid in list(join_times.keys()):
@@ -579,6 +660,65 @@ def _split_seconds_by_day(start_time: datetime, end_time: datetime) -> list[tupl
         cursor = segment_end
     return parts
 
+def _get_pomodoro_phase_start(sess) -> datetime:
+    if getattr(sess, 'phase', None) == 'work':
+        return sess.phase_end - timedelta(minutes=sess.work_minutes)
+    if getattr(sess, 'phase', None) == 'break':
+        return sess.phase_end - timedelta(minutes=sess.break_minutes)
+    return sess.phase_end
+
+def _resolve_study_window(
+    member_id: int,
+    start_time: datetime,
+    end_time: datetime,
+) -> tuple[datetime, datetime] | None:
+    if end_time <= start_time:
+        return None
+
+    session_start = join_times.get(member_id)
+    checkpoint = last_checkpoint.get(member_id, session_start or start_time)
+    effective_start = max(start_time, checkpoint)
+    effective_end = end_time
+    sess = _get_pomodoro_session(member_id)
+
+    if sess:
+        if sess.phase == 'work':
+            phase_start = _get_pomodoro_phase_start(sess)
+            effective_end = min(effective_end, sess.phase_end)
+            if sess.completed_rounds > 0 or checkpoint >= phase_start:
+                effective_start = max(effective_start, phase_start)
+        elif sess.phase == 'break':
+            break_start = _get_pomodoro_phase_start(sess)
+            prev_work_start = break_start - timedelta(minutes=sess.work_minutes)
+            effective_end = min(effective_end, break_start)
+            effective_start = max(effective_start, prev_work_start)
+        else:
+            return None
+
+    if session_start is not None:
+        effective_start = max(effective_start, session_start)
+    if effective_end <= effective_start:
+        return None
+    return effective_start, effective_end
+
+def _get_pending_study_window(
+    member_id: int,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime] | None:
+    if member_id not in join_times or member_id not in media_active_members:
+        return None
+    now = now or datetime.now()
+    checkpoint = last_checkpoint.get(member_id, join_times[member_id])
+    return _resolve_study_window(member_id, checkpoint, now)
+
+def _sync_checkpoint_after_persist(member_id: int, end_time: datetime):
+    if not _last_data_save_success or member_id not in join_times:
+        return
+    current_checkpoint = last_checkpoint.get(member_id, join_times[member_id])
+    if end_time > current_checkpoint:
+        last_checkpoint[member_id] = end_time
+        save_runtime_state()
+
 def add_study_time(
     member_id: int,
     member_name: str,
@@ -588,9 +728,23 @@ def add_study_time(
 ) -> dict:
     if seconds <= 0:
         return {}
+    start_explicit = start_time is not None
     end_time = end_time or datetime.now()
     start_time = start_time or (end_time - timedelta(seconds=seconds))
-    if end_time <= start_time:
+    if not start_explicit and member_id in join_times:
+        checkpoint = last_checkpoint.get(member_id, join_times[member_id])
+        sess = _get_pomodoro_session(member_id)
+        if sess and sess.phase == 'work':
+            phase_start = _get_pomodoro_phase_start(sess)
+            if sess.completed_rounds == 0 and checkpoint < phase_start and start_time >= phase_start:
+                start_time = checkpoint
+
+    resolved_window = _resolve_study_window(member_id, start_time, end_time)
+    if not resolved_window:
+        return {}
+    start_time, end_time = resolved_window
+    seconds = int((end_time - start_time).total_seconds())
+    if seconds <= 0:
         return {}
     day_parts = _split_seconds_by_day(start_time, end_time)
     if not day_parts:
@@ -631,6 +785,12 @@ def add_study_time(
         }
 
     result, _ = update_data(mutator)
+    if not _last_data_save_success:
+        log.critical(
+            f'Không thể xác minh dữ liệu sau khi cộng thời gian cho {member_name} ({member_id}).'
+        )
+        return {}
+    _sync_checkpoint_after_persist(member_id, end_time)
     return result
 
 def add_xp_direct(uid: str, xp_amount: int):
@@ -654,7 +814,16 @@ def generate_daily_quests(uid: str, today: str, member_name: str = '') -> list[d
         streak = data[uid].get('streak', 0)
         pool = [q for q in QUEST_POOL if not (q['type'] == 'streak' and streak >= q['target'])]
         chosen = random.sample(pool, min(QUEST_DAILY_COUNT, len(pool)))
-        quests = [{'id': q['id'], 'progress': 0, 'done': False, 'notified': False} for q in chosen]
+        quests = [
+            {
+                'id': q['id'],
+                'progress': 0,
+                'done': False,
+                'notified': False,
+                'notification_pending': False,
+            }
+            for q in chosen
+        ]
         data[uid].setdefault('daily_quests', {})[today] = quests
         return quests
 
@@ -704,6 +873,7 @@ def update_quest_progress(uid: str, today: str, override_today_secs: int = None,
             if q['progress'] >= target and not q.get('done'):
                 q['done'] = True
                 q['notified'] = False
+                q['notification_pending'] = True
                 just_done.append(q['id'])
                 data[uid]['quests_done_total'] = data[uid].get('quests_done_total', 0) + 1
                 xp_bonus = info.get('xp', 0)
@@ -723,10 +893,14 @@ def claim_completed_quest_notifications(uid: str, today: str) -> list[dict]:
         quests = data[uid].get('daily_quests', {}).get(today, [])
         claimed: list[dict] = []
         for q in quests:
-            if q.get('done') and not q.get('notified', False):
+            pending_notification = q.get('notification_pending')
+            if pending_notification is None:
+                pending_notification = q.get('done') and not q.get('notified', False)
+            if q.get('done') and pending_notification:
                 info = get_quest_info(q['id'])
                 if info:
                     claimed.append(info)
+                q['notification_pending'] = False
                 q['notified'] = True
         if claimed:
             data[uid].setdefault('daily_quests', {})[today] = quests
@@ -1002,28 +1176,34 @@ def _get_pomodoro_session(member_id: int):
     return getattr(pomo_cog, '_sessions', {}).get(member_id)
 
 def _get_unsaved_study_seconds(member_id: int, now: datetime | None = None) -> int:
-    now = now or datetime.now()
-    sess = _get_pomodoro_session(member_id)
-    if sess:
-        if sess.phase == 'work' and sess.phase_end > now:
-            return max(0, int(sess.work_minutes * 60 - sess.phase_remaining))
+    window = _get_pending_study_window(member_id, now or datetime.now())
+    if not window:
         return 0
-    if member_id in join_times and member_id in media_active_members:
-        checkpoint = last_checkpoint.get(member_id, join_times[member_id])
-        return max(0, int((now - checkpoint).total_seconds()))
-    return 0
+    start_time, end_time = window
+    return max(0, int((end_time - start_time).total_seconds()))
 
-async def _do_checkpoint(member: discord.Member) -> tuple[int, dict]:
-    if member.id not in join_times: return 0, {}
-    now        = datetime.now()
-    checkpoint = last_checkpoint.get(member.id, join_times[member.id])
-    elapsed    = int((now - checkpoint).total_seconds())
-    result: dict = {}
+async def _do_checkpoint(member: discord.Member, now: datetime | None = None) -> tuple[int, dict]:
+    if member.id not in join_times:
+        return 0, _default_progress_result()
+    now = now or datetime.now()
+    window = _get_pending_study_window(member.id, now)
+    result = _default_progress_result()
+    if not window:
+        return 0, result
+
+    start_time, end_time = window
+    elapsed = max(0, int((end_time - start_time).total_seconds()))
     if elapsed > 0:
-        result = add_study_time(member.id, member.display_name, elapsed, start_time=checkpoint, end_time=now)
-        last_checkpoint[member.id] = now
-        save_runtime_state()
-        log.info(f'[Checkpoint] {member.display_name}: +{format_time(elapsed)}')
+        saved_result = add_study_time(
+            member.id,
+            member.display_name,
+            elapsed,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        if saved_result:
+            result.update(saved_result)
+            log.info(f'[Checkpoint] {member.display_name}: +{format_time(elapsed)}')
     return elapsed, result
 
 async def _check_milestones(member: discord.Member):
@@ -1071,17 +1251,11 @@ async def _check_quests_and_badges(member: discord.Member):
 async def record_leave_and_notify(member: discord.Member, force_in_pomodoro: bool = False) -> int:
     if member.id not in join_times: return 0
 
-    pomo_cog      = bot.cogs.get('PomodoroCog')
-    in_pomodoro   = force_in_pomodoro or (pomo_cog is not None and member.id in getattr(pomo_cog, '_sessions', {}))
-
     now        = datetime.now()
-    checkpoint = last_checkpoint.get(member.id, join_times[member.id])
-    remaining  = int((now - checkpoint).total_seconds())
-    if remaining > 0 and member.id in media_active_members and not in_pomodoro:
-        result = add_study_time(member.id, member.display_name, remaining, start_time=checkpoint, end_time=now)
-        if result and result.get('level_up'):
-            await _ensure_role_synced(member, result['new_level'])
-            await safe_send_dm(member, f'🎉 **LEVEL UP! Bạn đã đạt Lv.{result["new_level"]} {LEVEL_NAMES[result["new_level"]]}** 🎊')
+    _, result = await _do_checkpoint(member, now)
+    if result.get('level_up'):
+        await _ensure_role_synced(member, result['new_level'])
+        await safe_send_dm(member, f'🎉 **LEVEL UP! Bạn đã đạt Lv.{result["new_level"]} {LEVEL_NAMES[result["new_level"]]}** 🎊')
 
     total_duration = int((now - join_times.pop(member.id)).total_seconds())
     last_checkpoint.pop(member.id, None)
@@ -1385,6 +1559,21 @@ async def _force_stop_pomodoro_if_active(member: discord.Member, reason: str = '
     )
     return True
 
+async def _cancel_reminder_task(member_id: int):
+    old = remind_tasks.pop(member_id, None)
+    if not old:
+        return
+
+    old_task = old[1]
+    if old_task and not old_task.done():
+        old_task.cancel()
+        try:
+            await old_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.error(f'[Remind] Lỗi khi huỷ task cho {member_id}: {e}')
+
 def bot_can_move(member): return member.guild.me.guild_permissions.move_members
 
 def cancel_task(mid: int):
@@ -1414,7 +1603,12 @@ async def check_media(member: discord.Member):
             if not bot_can_move(member): return
             pomo_cog = bot.cogs.get('PomodoroCog')
             was_in_pomo = pomo_cog is not None and member.id in getattr(pomo_cog, '_sessions', {})
+            _, checkpoint_result = await _do_checkpoint(member)
+            media_active_members.discard(member.id)
             await _force_stop_pomodoro_if_active(member, reason='bị kick (không bật camera/stream)')
+            if checkpoint_result.get('level_up'):
+                await _ensure_role_synced(member, checkpoint_result['new_level'])
+                await safe_send_dm(member, f'🎉 **LEVEL UP! Bạn đã đạt Lv.{checkpoint_result["new_level"]} {LEVEL_NAMES[checkpoint_result["new_level"]]}** 🎊')
             await record_leave_and_notify(member, force_in_pomodoro=was_in_pomo)
             await member.move_to(None)
             await safe_send_dm(member,
@@ -1486,16 +1680,13 @@ async def checkpoint_task():
         now_active = bool(member.voice and is_media_active(member.voice))
         in_pomo    = mid in pomo_sessions
         
-        if was_active and not in_pomo:
+        if was_active:
             elapsed, result = await _do_checkpoint(member)
-            if result and result.get('level_up'):
+            if result.get('level_up'):
                 await _ensure_role_synced(member, result['new_level'])
                 await safe_send_dm(member, f'🎉 **LEVEL UP! Bạn đã đạt Lv.{result["new_level"]} {LEVEL_NAMES[result["new_level"]]}** 🎊')
             await _check_milestones(member)
             await _check_quests_and_badges(member)
-        elif in_pomo and was_active:
-            last_checkpoint[mid] = datetime.now()
-            save_runtime_state()  # FIX: Persist checkpoint timestamp for pomodoro sessions
         
         if now_active and not was_active:
             media_active_members.add(mid)
@@ -1591,6 +1782,14 @@ async def _check_absences():
         update_data(persist_warnings)
 
 async def _sync_member_progress(member: discord.Member, previous_level: int | None = None):
+    if (
+        member.id in join_times
+        and member.id in media_active_members
+        and _get_pomodoro_session(member.id) is None
+        and _last_data_save_success
+    ):
+        last_checkpoint[member.id] = datetime.now()
+        save_runtime_state()
     await _check_quests_and_badges(member)
     if previous_level is None:
         return
@@ -2310,13 +2509,12 @@ async def on_ready():
         # Restore reminders
         remind_h = info.get('remind_hour')
         if remind_h is not None:
-            old = remind_tasks.pop(mid, None)
-            if old:
-                old_task = old[1]
-                if old_task and not old_task.done(): old_task.cancel()
+            await _cancel_reminder_task(mid)
             for guild in bot.guilds:
                 m = guild.get_member(mid)
                 if m:
+                    if mid in remind_tasks:
+                        break
                     t = asyncio.create_task(_remind_loop(m, remind_h))
                     remind_tasks[mid] = (remind_h, t)
                     log.info(f'[Remind] Khôi phục: {info["name"]} lúc {remind_h:02d}:00')
@@ -2388,13 +2586,14 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         elif was_active and not now_active:
             if in_pomodoro:
                 previous_level = load_data().get(str(member.id), {}).get('level', 0)
+                await _do_checkpoint(member)
                 await _force_stop_pomodoro_if_active(member, reason='tắt Cam/Stream')
                 media_active_members.discard(member.id)
                 save_runtime_state()
                 await _sync_member_progress(member, previous_level)
             else:
                 elapsed, result = await _do_checkpoint(member)
-                if result and result.get('level_up'):
+                if result.get('level_up'):
                     await _ensure_role_synced(member, result['new_level'])
                     await safe_send_dm(member, f'🎉 **LEVEL UP! Bạn đã đạt Lv.{result["new_level"]} {LEVEL_NAMES[result["new_level"]]}** 🎊')
                 await _check_quests_and_badges(member)
@@ -2423,8 +2622,13 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     elif left_focus and not stayed_in_focus:
         pomo_cog = bot.cogs.get('PomodoroCog')
         was_in_pomo = pomo_cog is not None and member.id in getattr(pomo_cog, '_sessions', {})
-        
+        _, checkpoint_result = await _do_checkpoint(member)
+        media_active_members.discard(member.id)
+
         await _force_stop_pomodoro_if_active(member, reason='rời phòng học')
+        if checkpoint_result.get('level_up'):
+            await _ensure_role_synced(member, checkpoint_result['new_level'])
+            await safe_send_dm(member, f'🎉 **LEVEL UP! Bạn đã đạt Lv.{checkpoint_result["new_level"]} {LEVEL_NAMES[checkpoint_result["new_level"]]}** 🎊')
         duration = await record_leave_and_notify(member, force_in_pomodoro=was_in_pomo)
         cancel_task(member.id)
         log.info(f'{member.display_name} rời phòng sau {format_time(duration)}')
