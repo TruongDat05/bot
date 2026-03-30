@@ -1,15 +1,9 @@
-# Core dependencies
 discord.py==2.3.2
 python-dotenv==1.0.0
 flask==3.0.0
-
-# Image processing (optional but recommended)
+PyNaCl==1.5.0
 Pillow==10.2.0
-
-# OpenRouter API (optional)
-openai==1.30.0
-httpx==0.27.0
-
-# Additional utilities
+openai==1.54.0
+httpx==0.27.2
 aiohttp==3.9.3
 python-dateutil==2.8.2
